@@ -37,3 +37,7 @@ Desktop.ini
 .vscode/
 .idea/
 *.swp
+
+# Corpus build artifacts -- Markdown is the source, these are generated
+corpus/pdf/
+corpus/figures/
