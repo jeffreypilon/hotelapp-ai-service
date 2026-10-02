@@ -14,7 +14,16 @@ from hotelapp_ai.main import create_app
 
 
 @pytest.fixture(autouse=True)
-def _clear_settings_cache() -> None:
+def _isolate_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clear the settings cache AND pin provider configuration explicitly.
+
+    Without the setenv, these tests inherit whatever the developer has in their environment or
+    .env -- so they pass on a machine with no OPENAI_API_KEY and fail on one that has a real key.
+    That failure mode is the wrong way round: green in CI, red locally, which is how a suite stops
+    being believed. An environment variable takes precedence over .env in pydantic-settings, so
+    setting it empty here isolates the test from both.
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "")
     get_settings.cache_clear()
 
 
