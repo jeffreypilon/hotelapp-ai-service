@@ -1,6 +1,4 @@
-"""App assembly. Nothing else -- no route logic, no startup side effects beyond wiring. See
-architecture-specification.md's folder layout.
-"""
+"""App assembly. Nothing else -- no route logic, only startup wiring plus schema validation."""
 
 from __future__ import annotations
 
@@ -15,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from hotelapp_ai.config.settings import get_settings
 from hotelapp_ai.gateways.hotelapp import HotelAppGateway
+from hotelapp_ai.repositories.database import assert_ai_schema_ready
 from hotelapp_ai.transport.rest import health
 from hotelapp_ai.transport.rest.problem import (
     ProblemDetailError,
@@ -42,11 +41,13 @@ def _configure_logging(log_level: str) -> None:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     _configure_logging(settings.log_level)
+    assert_ai_schema_ready(settings.require_database_url())
 
     client = httpx.AsyncClient(timeout=httpx.Timeout(5.0))
     app.state.settings = settings
     app.state.http_client = client
     app.state.gateway = HotelAppGateway(client, settings.hotelapp_api_base_url)
+    app.state.retrieval_status = "UP"
 
     try:
         yield

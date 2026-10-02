@@ -1,6 +1,4 @@
-"""Unit tests for GET /api/v1/assistant/health. No infrastructure needed -- the backend call is
-stubbed by monkeypatching the gateway, not by mocking retrieval or a database (neither exists yet).
-"""
+"""Unit tests for GET /api/v1/assistant/health."""
 
 from __future__ import annotations
 
@@ -23,11 +21,15 @@ def _isolate_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     being believed. An environment variable takes precedence over .env in pydantic-settings, so
     setting it empty here isolates the test from both.
     """
+    monkeypatch.setenv("HOTELAPP_API_BASE_URL", "http://localhost:8080/api/v1")
     monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5433/hotelapp")
     get_settings.cache_clear()
 
 
 def test_health_reports_backend_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("hotelapp_ai.main.assert_ai_schema_ready", lambda database_url: None)
+
     async def fake_get_properties(
         self: HotelAppGateway, *, cookie_header: str | None = None
     ) -> httpx.Response:
@@ -42,13 +44,15 @@ def test_health_reports_backend_up(monkeypatch: pytest.MonkeyPatch) -> None:
     assert response.json() == {
         "status": "UP",
         "provider": "NOT_CONFIGURED",
-        "retrieval": "NOT_CONFIGURED",
+        "retrieval": "UP",
         "backend": "UP",
         "backendTarget": "springboot",
     }
 
 
 def test_health_reports_backend_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("hotelapp_ai.main.assert_ai_schema_ready", lambda database_url: None)
+
     async def fake_get_properties(
         self: HotelAppGateway, *, cookie_header: str | None = None
     ) -> httpx.Response:
@@ -64,6 +68,7 @@ def test_health_reports_backend_down(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_health_reports_provider_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("hotelapp_ai.main.assert_ai_schema_ready", lambda database_url: None)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     get_settings.cache_clear()
 
@@ -78,3 +83,12 @@ def test_health_reports_provider_configured(monkeypatch: pytest.MonkeyPatch) -> 
         response = client.get("/api/v1/assistant/health")
 
     assert response.json()["provider"] == "UP"
+
+
+def test_startup_requires_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "")
+    get_settings.cache_clear()
+
+    with pytest.raises(RuntimeError, match="DATABASE_URL is required"):
+        with TestClient(create_app()):
+            pass

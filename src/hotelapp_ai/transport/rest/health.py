@@ -1,4 +1,4 @@
-"""`GET /api/v1/assistant/health` -- reports provider and backend reachability separately.
+"""`GET /api/v1/assistant/health` -- reports provider, retrieval, and backend reachability.
 "the service is running" and "the service can answer questions" are different facts; see
 api-contracts.md's `GET /assistant/health`.
 """
@@ -40,10 +40,7 @@ async def get_health(request: Request) -> HealthResponse:
     return HealthResponse(
         status="UP",
         provider="UP" if settings.provider_configured else "NOT_CONFIGURED",
-        # No repository/vector-store wiring exists yet in this step -- Step 1 replaces this with
-        # a real assertion that `ai_chunks` and the `vector` extension exist, the same posture as
-        # Spring Boot's `ddl-auto=validate` (architecture-specification.md).
-        retrieval="NOT_CONFIGURED",
+        retrieval=request.app.state.retrieval_status,
         backend=backend,
         backend_target=_backend_target_for(settings.hotelapp_api_base_url),
     )

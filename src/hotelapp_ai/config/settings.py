@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     embedding_model: str = "text-embedding-3-small"
 
-    # ai_* tables only -- not used until Step 1's startup assertion and repositories exist.
+    # ai_* tables only.
     database_url: str | None = None
 
     port: int = 8000
@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     @property
     def provider_configured(self) -> bool:
         return bool(self.openai_api_key)
+
+    def require_database_url(self) -> str:
+        if not self.database_url:
+            raise RuntimeError(
+                "DATABASE_URL is required in AI Step 1. Point it at the Compose pgvector "
+                "database on localhost:5433."
+            )
+        return self.database_url
 
 
 @lru_cache

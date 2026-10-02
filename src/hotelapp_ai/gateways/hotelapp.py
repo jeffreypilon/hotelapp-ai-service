@@ -24,6 +24,12 @@ class HotelAppGateway:
         headers = {"Cookie": cookie_header} if cookie_header else None
         return await self._client.get(f"{self._base_url}/properties", headers=headers)
 
+    async def list_properties(self) -> list[dict[str, object]]:
+        response = await self.get_properties()
+        response.raise_for_status()
+        payload = response.json()
+        return list(payload["data"])
+
     async def check_backend_reachable(self) -> bool:
         """Used by `transport/rest/health.py`, which may never import `httpx` itself --
         catching and classifying the request error belongs to this layer, not transport's.

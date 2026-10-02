@@ -5,19 +5,23 @@ natural-language availability search. Reads business data over the REST contract
 
 ## Status
 
-**Step 0 (walking skeleton) is done**: FastAPI app, `GET /api/v1/assistant/health`, one real REST
-call to a backend (`gateways/hotelapp.py`), Compose wiring under `--profile ai`, and CI (lint,
-format, mypy strict, `lint-imports` layering, the REST-only grep, unit tests, image build). No
-retrieval, no model calls, no MCP, no database wiring yet -- see
-`../hotelapp-context/shared/phased-implementation-plan.md`'s "AI Step 0" for the authoritative
-scope and `stacks/ai-service/architecture-specification.md` for the full design.
+**Step 1 (migrations, repositories, and corpus ingestion) is now implemented in code.**
+
+Added in this step:
+- startup-time schema validation against `pgvector` plus `ai_documents`, `ai_chunks`, and
+  `ai_eval_runs`, mirroring Spring Boot's `ddl-auto=validate` posture;
+- explicit `psycopg` repositories for all three AI-owned tables;
+- deterministic chunking in `domain/chunking.py`;
+- `hotelapp-ai ingest` / `hotelapp-ai ingest --stats`, including PDF parsing, normalization,
+  heading-path propagation, embeddings, and idempotency by `content_hash`;
+- unit tests against the **real rendered PDFs** in `corpus/pdf/`, plus an idempotency test proving
+  a second ingest run makes zero embedding calls when the corpus is unchanged.
 
 The canonical setup guide is
 `../hotelapp-context/stacks/ai-service/environment-setup-guide.md`. This section records what was
-**actually run and verified** for Step 0, since that document itself was not updated as part of
-this change (see "A note on scope" below).
+**actually run and verified** for Step 1 in this repository.
 
-## Clone to running, as verified for Step 0
+## Clone to running, as verified for Step 1
 
 ```powershell
 # uv is not assumed pre-installed
@@ -26,48 +30,49 @@ $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"   # add to PATH each new ter
 
 uv python install 3.13   # if not already present -- uv manages its own interpreter
 uv sync --frozen          # NOT `uv add` -- respects the committed uv.lock
-cp .env.example .env      # then edit; OPENAI_API_KEY absent is a valid, supported state
+cp .env.example .env      # DATABASE_URL now targets the Compose pgvector DB on :5433
 
-uv run pytest tests/unit
+docker compose -f ..\hotelapp-context\docker\docker-compose.yml --profile ai up flyway-ai
+
+uv run pytest tests -q
 uv run ruff check . && uv run ruff format --check .
 uv run mypy src
 uv run lint-imports
 uv run hotelapp-ai serve   # FastAPI on :8000
+uv run hotelapp-ai ingest
+uv run hotelapp-ai ingest --stats
 ```
 
 ```powershell
 curl http://localhost:8000/api/v1/assistant/health
 ```
 
-**Verified, with no `OPENAI_API_KEY` set anywhere:**
-- The service starts cleanly and `/health` reports `"provider": "NOT_CONFIGURED"`.
-- With a real backend reachable, `/health` reports `"backend": "UP"`; stopping that backend (and
-  only that) flips the same field to `"DOWN"` -- the two states are independent, as designed.
-- Setting `OPENAI_API_KEY` flips `"provider"` to `"UP"` with no other change.
-- All four existing Phase 8 Compose combinations (`react`/`angular` x `spring`/`node`, no `ai`
-  profile) still come up and serve `GET /properties` correctly against the `pgvector/pgvector:pg18`
-  database image, with no API key anywhere.
-- `docker compose --profile react --profile spring --profile ai up --build` brings up all four
-  services together; `lint-imports` and the `repositories/` grep both pass in CI while trivially
-  true (no files in `repositories/` yet).
+**Verified in this environment:**
+- `docker compose --profile ai up flyway-ai` created the AI schema successfully against the
+  Compose database on `localhost:5433`.
+- `assert_ai_schema_ready(...)` passes against that database.
+- The health endpoint's startup path now validates the schema and reports retrieval `"UP"` once
+  startup succeeds.
+- All tests, `mypy`, and `lint-imports` pass with the new repositories, ingestion service, and
+  normalization logic.
+- The normalization tests use the actual rendered PDFs and assert the three extraction artefacts
+  called out in the architecture specification: doubled spaces, running headers/footers, and
+  line-wrapped phrases.
+
+**Not fully verified here:**
+- Live embedding and `ai_chunks` population, because this environment did **not** provide an
+  `OPENAI_API_KEY`. `uv run hotelapp-ai ingest` therefore fails early, clearly, and intentionally.
+- Live property-id resolution through `GET /properties`, because the ingest command exits before
+  provider calls when the API key is absent.
 
 ### A real finding from this step
 
-Now that `V002__ai_tables.sql` exists in `shared/migrations/`, Flyway applies it **unconditionally**
-against any database it migrates -- not just when `--profile ai` is used. A native (non-Docker)
-PostgreSQL 18 install with no pgvector extension therefore fails `CREATE EXTENSION vector` and
-**Spring Boot refuses to start at all** against it, even for plain Phase 1-8 work. Confirmed
-directly on this machine. Compose is unaffected once `db`'s image is the pgvector build (this
-step's own required change); native local development now needs pgvector installed into the native
-Postgres too, project-wide -- not only for engineers working on this service.
+`shared/acceptance-criteria.md` clearly specifies the **48-hour cancellation window**, but it does
+**not** state the 30-night maximum stay. The real rendered-PDF normalization tests therefore pin
+the 30-night fact from the corpus plus the API contract, not from acceptance criteria alone.
 
 ### A note on scope
 
-The Step 0 instructions in `phased-implementation-plan.md` ask for
-`stacks/ai-service/environment-setup-guide.md` to be rewritten with what actually worked, as the
-last act of this step. That file lives in `hotelapp-context`, and this change was scoped to touch
-only `hotelapp-ai-service` plus `hotelapp-context/docker/docker-compose.yml` -- so that rewrite
-has **not** been done, and the canonical guide still reads as an unvalidated plan. This section
-exists so the verified commands are recorded somewhere; the context repo's own document still
-needs the same update next time it's in scope.
-
+This repository change was scoped to `hotelapp-ai-service` only. The already-existing AI migration
+in `hotelapp-context/shared/migrations-ai/V001__ai_tables.sql` was **applied**, not edited, and
+the canonical setup guide in `hotelapp-context` was left untouched.
