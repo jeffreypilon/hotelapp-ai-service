@@ -30,6 +30,7 @@ from hotelapp_ai.services.reranking import CrossEncoderReranker
 from hotelapp_ai.services.retrieval import RankedChunk, retrieve_ranked_chunks
 from hotelapp_ai.services.search import SearchDependencies
 from hotelapp_ai.services.search import search as run_search
+from hotelapp_ai.transport.mcp.stdio import run as run_mcp_stdio
 
 
 def serve() -> None:
@@ -252,6 +253,11 @@ def main() -> None:
         "search. AI Step 4's manual-verification CLI -- no frontend exists yet.",
     )
     search_parser.add_argument("query", help="The free-text search request.")
+    subparsers.add_parser(
+        "mcp-stdio",
+        help="Serve MCP over stdio, public tool surface only. AI Step 5 -- what Claude Desktop "
+        "launches as a local subprocess.",
+    )
 
     args = parser.parse_args()
     if args.command == "serve":
@@ -264,6 +270,8 @@ def main() -> None:
         ask(args.question)
     if args.command == "search":
         search(args.query)
+    if args.command == "mcp-stdio":
+        run_mcp_stdio()
 
 
 if __name__ == "__main__":

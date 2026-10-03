@@ -8,67 +8,35 @@ need a graph, and wrapping it in one would be machinery this step does not use
 
 This module is the only place in the service permitted to construct the extraction prompt or call
 a model for it, per module-registry.md's "`services/` is the only layer permitted to construct a
-prompt or call a model" rule.
+prompt or call a model" rule. The fan-out/merge logic that needs no model call lives in
+`services/availability.py` instead -- shared with the `search_availability` MCP tool (AI Step 5),
+which calls that module directly rather than this one so that reaching it from `transport/mcp/`
+never also reaches `services/llm_client.py`'s `httpx` import.
 """
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-from hotelapp_ai.domain.errors import (
-    BackendProblemError,
-    ProviderUnavailableError,
-    SearchParamsIncompleteError,
+from hotelapp_ai.domain.errors import ProviderUnavailableError, SearchParamsIncompleteError
+from hotelapp_ai.gateways.hotelapp import HotelAppGateway
+from hotelapp_ai.services.availability import (
+    AMENITY_CODES,
+    RATE_CATEGORIES,
+    ROOM_TYPE_CODES,
+    resolve_availability,
 )
-from hotelapp_ai.gateways.hotelapp import AvailabilityParams, HotelAppGateway
 from hotelapp_ai.services.llm_client import LLMClient
 
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
-
-# Fixed reference data, per shared/migrations/V001__initial_schema.sql and data-model.md --
-# constrained in the extraction schema itself so an invalid value is structurally impossible,
-# per coding-standards.md#structured-output-over-parsing-prose. Property ids are the opposite:
-# resolved against the *live* `GET /properties` list every call, never hardcoded here, because a
-# property can be renamed or added -- see api-contracts.md's `POST /assistant/search`.
-ROOM_TYPE_CODES = ["SINGLE", "DOUBLE", "KING", "SUITE", "CONFERENCE_ROOM"]
-RATE_CATEGORIES = [
-    "NONE",
-    "AAA_CAA",
-    "AARP",
-    "GOVERNMENT_PER_DIEM",
-    "MILITARY_VETERAN",
-    "SENIOR",
-    "CORPORATE_CODE",
-    "GROUP_CODE",
-]
-AMENITY_CODES = [
-    "WIFI",
-    "AIR_CONDITIONING",
-    "REFRIGERATOR",
-    "TELEVISION",
-    "MICROWAVE",
-    "WET_BAR",
-    "SAFE",
-]
 
 # Per-call ceiling, ai-enablement-overview.md §11: the nano tier, classification-shaped --
 # extracting a fixed parameter set plus one short sentence, not prose generation.
 EXTRACTION_MODEL_MAX_TOKENS = 400
 MODEL_CALL_TIMEOUT_SECONDS = 10.0
-
-# `GET /availability`'s own default. Used to recompute pagination over the merged set when no
-# property is named -- see `_merge_availability` below.
-DEFAULT_PAGE_SIZE = 20
-
-# Sized to "this chain has exactly two properties to check" (api-contracts.md's Design Decision),
-# not to scale: large enough that a single backend call returns every room type a property has,
-# so the merge step never silently drops a row to its own per-call page size.
-FAN_OUT_PAGE_SIZE = 100
 
 
 def _load_prompt(name: str) -> str:
@@ -143,15 +111,12 @@ class SearchResult:
     results: dict[str, Any]
 
 
-def _base_availability_params(
-    extracted: dict[str, Any], *, property_id: str | None
-) -> dict[str, Any]:
+def _base_availability_params(extracted: dict[str, Any]) -> dict[str, Any]:
     """The parameter set shown to the guest in `parameters`, and the one sent to
-    `GET /availability` -- identical either way except for a fan-out call's own `pageSize`
-    override, per `_availability_query_params` below.
+    `GET /availability` -- identical either way except for `propertyId` itself and a fan-out
+    call's own `pageSize` override, both added by `resolve_availability` below, not here.
     """
     params: dict[str, Any] = {
-        "propertyId": property_id,
         "checkInDate": extracted["checkInDate"],
         "checkOutDate": extracted["checkOutDate"],
         # Not invented the way a date would be -- `GET /availability` requires a guest count, and
@@ -172,66 +137,6 @@ def _base_availability_params(
     if extracted["maxNightlyRate"]:
         params["maxNightlyRate"] = extracted["maxNightlyRate"]
     return params
-
-
-def _availability_query_params(
-    extracted: dict[str, Any], *, property_id: str, fan_out: bool
-) -> AvailabilityParams:
-    params: AvailabilityParams = _base_availability_params(extracted, property_id=property_id)
-    if fan_out:
-        params["pageSize"] = FAN_OUT_PAGE_SIZE
-    return params
-
-
-async def _call_availability(
-    gateway: HotelAppGateway, params: AvailabilityParams, *, cookie_header: str | None
-) -> dict[str, Any]:
-    response = await gateway.get_availability(params, cookie_header=cookie_header)
-    if response.status_code >= 400:
-        body = response.json()
-        raise BackendProblemError(
-            status=response.status_code,
-            code=body.get("code", "INTERNAL_ERROR"),
-            detail=body.get("detail", "GET /availability returned an error."),
-        )
-    result: dict[str, Any] = response.json()
-    return result
-
-
-def _room_type_sort_key(row: dict[str, Any]) -> tuple[Decimal, str]:
-    try:
-        nightly_rate = Decimal(row["pricing"]["nightlyRate"])
-    except (InvalidOperation, KeyError, TypeError):
-        nightly_rate = Decimal("0")
-    # Stabilized by appending `id` as the final key, per api-contracts.md's pagination section,
-    # so the merged page never duplicates or drops a row across repeated runs.
-    return (nightly_rate, str(row["roomType"]["id"]))
-
-
-def _merge_availability(per_property_results: list[dict[str, Any]]) -> dict[str, Any]:
-    """Merges `data` across every property call, re-applies `GET /availability`'s own default
-    sort (`nightlyRate:asc`), and recomputes `pagination` over the combined set -- the response
-    **shape** stays identical to the single-property case, per api-contracts.md's Design
-    Decision.
-    """
-    merged_data = [row for result in per_property_results for row in result["data"]]
-    merged_data.sort(key=_room_type_sort_key)
-
-    total_items = len(merged_data)
-    total_pages = max(1, math.ceil(total_items / DEFAULT_PAGE_SIZE))
-    page_data = merged_data[:DEFAULT_PAGE_SIZE]
-
-    return {
-        "data": page_data,
-        "pagination": {
-            "page": 1,
-            "pageSize": DEFAULT_PAGE_SIZE,
-            "totalItems": total_items,
-            "totalPages": total_pages,
-            "hasPreviousPage": False,
-            "hasNextPage": total_items > DEFAULT_PAGE_SIZE,
-        },
-    }
 
 
 async def search(
@@ -275,22 +180,17 @@ async def search(
         )
 
     resolved_property_id = extracted["propertyId"]
-    if resolved_property_id is not None:
-        params = _availability_query_params(
-            extracted, property_id=resolved_property_id, fan_out=False
-        )
-        results = await _call_availability(deps.gateway, params, cookie_header=cookie_header)
-    else:
-        per_property_results = []
-        for property_id in property_ids:
-            params = _availability_query_params(extracted, property_id=property_id, fan_out=True)
-            per_property_results.append(
-                await _call_availability(deps.gateway, params, cookie_header=cookie_header)
-            )
-        results = _merge_availability(per_property_results)
+    base_params = _base_availability_params(extracted)
+    results = await resolve_availability(
+        deps.gateway,
+        base_params=base_params,
+        property_id=resolved_property_id,
+        cookie_header=cookie_header,
+        properties=properties,
+    )
 
     return SearchResult(
         interpretation=str(extracted["interpretation"]),
-        parameters=_base_availability_params(extracted, property_id=resolved_property_id),
+        parameters={"propertyId": resolved_property_id, **base_params},
         results=results,
     )

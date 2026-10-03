@@ -5,6 +5,87 @@ natural-language availability search. Reads business data over the REST contract
 
 ## Status
 
+**Step 5 (F1, MCP over stdio) is now implemented in code.** The public tool surface --
+`list_properties`, `get_property`, `list_room_types`, `search_availability`, `prepare_booking` --
+is served over stdio, exactly as `environment-setup-guide.md §6`'s Claude Desktop configuration
+already names, per `../hotelapp-context/shared/phased-implementation-plan.md`'s AI Step 5. No
+OAuth, no HTTP transport, no reservation reads or writes: stdio is deliberately limited to data
+that is already public (`ai-enablement-overview.md §6`'s Design Decision).
+
+Added in this step:
+- `transport/mcp/tools.py`: all five public tools, each tagged `public`, over the real
+  `gateways/hotelapp.py`. `search_availability` takes structured arguments directly -- no
+  extraction call of its own, since an MCP client has already turned natural language into typed
+  arguments -- and `prepare_booking` returns a deep link into S3 (search results), never S4,
+  creating no reservation;
+- `services/availability.py`: the no-extraction half of F2's fan-out-and-merge logic, split out
+  of `services/search.py` so that reaching it from `transport/mcp/` never also reaches
+  `services/llm_client.py`'s model-calling `httpx` import (see the import-linter finding below).
+  `services/search.py` now calls this module instead of duplicating the logic;
+- `gateways/hotelapp.py` gains `get_property()`, `list_room_types()`, a shared
+  `raise_for_problem()` helper (Problem Details pass through with the original `code`, never a
+  paraphrase), and `HotelAppGateway.open()`, an async context manager that owns its own
+  `httpx.AsyncClient` for a caller with no app-lifespan to bind one to;
+- `transport/mcp/stdio.py` and the `hotelapp-ai mcp-stdio` CLI command, already named in
+  `environment-setup-guide.md §5`;
+- `HOTELAPP_FRONTEND_BASE_URL` (new setting + `.env.example` entry) -- which frontend
+  `prepare_booking` links into; there is no way to detect which one is actually running;
+- `tests/unit/test_mcp_tools.py`: the official MCP Python SDK's own `ClientSession`, connected to
+  the real `FastMCP` server over `mcp.shared.memory`'s in-process transport (identical wire
+  protocol to stdio; a spawned OS subprocess buys nothing here but slower tests) -- asserts
+  exactly five tools are exposed, none of the four OAuth-gated tools leak onto this surface, and
+  each tool's response shape;
+- `tests/unit/test_gateway.py`: the two new gateway methods, including Problem Details
+  passthrough on a 404 and a 500.
+
+### Two findings from this step
+
+1. **`fastmcp`'s actual API (2.1.2, what this project resolved) has no tag-based filtering.** The
+   step's own drafting anticipated `include_tags`/`exclude_tags` or a `server.disable(tags=...)`
+   method on a 3.0+ release; `dir(FastMCP)` on the installed package has neither, nor does
+   `fastmcp.settings.Settings` carry a tag-shaped field. Resolved by registering only the tools
+   each transport is allowed to expose, via `register_public_tools(mcp, deps)`, rather than
+   registering everything once and filtering afterwards -- `tags={"public"}` is kept as a real,
+   checkable fact for the test suite, and as what a future `http.py`'s own
+   `register_full_surface` would combine with the OAuth-gated tools' own tags.
+2. **The import-linter contract `"transport knows HTTP/MCP, not models, prompts, or SQL"`
+   forbids `httpx` for all of `transport/`, but MCP tools are specified as "thin wrappers over
+   `gateways/hotelapp.py`"** (`module-registry.md`), which itself imports `httpx` by design. REST
+   avoided this by never importing `services/`/`gateways/` for typing, reaching them only through
+   an untyped `request.app.state` handle -- a pattern that does not fit MCP tool functions, which
+   must call the gateway directly to do anything at all. Resolved with a single, narrowly-scoped
+   `ignore_imports` entry for exactly the `gateways/hotelapp.py -> httpx` edge (see the comment on
+   it in `pyproject.toml`) -- the contract's own name says transport is allowed to know HTTP, and
+   the exception does not weaken what "not models" actually polices: reaching
+   `services/llm_client.py`'s own `httpx` import is still caught, which the
+   `services/availability.py` split (above) is what keeps `transport/mcp/tools.py` clear of in the
+   first place.
+
+**Verified in this environment, end to end, against the real, running Spring Boot backend, over a
+real OS stdio subprocess** (the official MCP Python SDK's `stdio_client`, not the in-process test
+transport): all five tools registered; `list_properties` returned both seeded properties;
+`list_room_types` returned Harborview Grand's four real room types; `search_availability` with no
+`propertyId` fanned out across both properties and returned a merged, re-sorted result;
+`prepare_booking` returned
+`http://localhost:5173/properties/<id>/search?checkInDate=...&checkOutDate=...&numGuests=2&roomTypeCode=SUITE`,
+exactly S3's own parameter names. **The hand-verified Claude Desktop pass itself -- this step's
+actual demo moment -- was not run in this environment** and remains the one item in "Done means"
+still to confirm by hand.
+
+All 61 tests (16 new: 11 `tests/unit/test_mcp_tools.py` -- 7 cases plus 4 edge-case
+parametrizations -- and 5 `tests/unit/test_gateway.py`), `ruff check`, `ruff format --check`,
+`mypy --strict`, and `lint-imports` pass (all four layering contracts still kept, one with a
+documented, narrow exception).
+
+### A note on scope
+
+This repository change was scoped to `hotelapp-ai-service` only, as AI Step 5 requires. No changes
+to `hotelapp-context` were needed or made this time -- `environment-setup-guide.md §§5-6` and
+`ai-enablement-overview.md §6` already specified this step's CLI command, Claude Desktop
+configuration, and design decisions exactly as built.
+
+## Step 4 status (natural-language availability search, F2)
+
 **Step 4 (natural-language availability search, F2) is now implemented in code.**
 `POST /assistant/search` resolves a free-text request into `GET /availability`'s own parameter
 set via one structured-output call, then runs that search -- named/city-implied property, one

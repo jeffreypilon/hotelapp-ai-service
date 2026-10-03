@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     # Which backend to call. No SQL access to business data -- see architecture-specification.md.
     hotelapp_api_base_url: str = "http://localhost:8080/api/v1"
 
+    # Which frontend `prepare_booking` links into (AI Step 5). Defaults to React; there is no way
+    # to detect which frontend is actually running, so this has to be told -- point it at
+    # http://localhost:4200 to demo against Angular instead.
+    hotelapp_frontend_base_url: str = "http://localhost:5173"
+
     # Provider. Absent `OPENAI_API_KEY` is a valid, supported state: the service starts and
     # reports AI features unavailable rather than crashing.
     llm_provider: Literal["openai", "ollama"] = "openai"
