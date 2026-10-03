@@ -3,13 +3,18 @@
 # Phase 9 AI service image. python:3.13-slim matches requires-python in pyproject.toml exactly,
 # so a local run and a container run cannot silently differ (dependency-policy.md#packaging).
 
-# syntax=docker/dockerfile:1.7
-
-# Phase 9 AI service image. python:3.13-slim matches requires-python in pyproject.toml exactly,
-# so a local run and a container run cannot silently differ (dependency-policy.md#packaging).
-
 FROM python:3.13-slim AS build
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+# The official installer script, not `COPY --from=ghcr.io/astral-sh/uv:latest` -- that pattern
+# started failing CI with "429 Too Many Requests" from ghcr.io's shared registry, twice in a row,
+# unrelated to anything in this repo. This is the same install mechanism already documented and
+# verified for native setup (environment-setup-guide.md), so Docker and local dev now use one
+# method instead of two.
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+
 # Same WORKDIR as the final stage -- uv's console-script shims embed an absolute shebang to this
 # path's venv interpreter, so the two stages must agree or the copied venv's scripts break.
 WORKDIR /app
