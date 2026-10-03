@@ -114,6 +114,51 @@ class DocumentsRepository:
             updated_at=cast(datetime, row[7]),
         )
 
+    def get_by_ids(
+        self,
+        connection: psycopg.Connection[tuple[object, ...]],
+        *,
+        document_ids: list[UUID],
+    ) -> list[DocumentRecord]:
+        """Used by `services/assistant.py` to resolve a citation's document title from the
+        `document_id` carried on each retrieved chunk. Order is not significant to the caller --
+        it builds its own `{id: record}` lookup.
+        """
+        if not document_ids:
+            return []
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id,
+                       source_path,
+                       title,
+                       property_id,
+                       content_hash,
+                       chunk_count,
+                       ingested_at,
+                       updated_at
+                FROM ai_documents
+                WHERE id = ANY(%s)
+                """,
+                (document_ids,),
+            )
+            rows = cursor.fetchall()
+
+        return [
+            DocumentRecord(
+                id=cast(UUID, row[0]),
+                source_path=cast(str, row[1]),
+                title=cast(str, row[2]),
+                property_id=cast(UUID | None, row[3]),
+                content_hash=cast(str, row[4]),
+                chunk_count=cast(int, row[5]),
+                ingested_at=cast(datetime, row[6]),
+                updated_at=cast(datetime, row[7]),
+            )
+            for row in rows
+        ]
+
     def count_all(self, connection: psycopg.Connection[tuple[object, ...]]) -> int:
         with connection.cursor() as cursor:
             cursor.execute("SELECT count(id) FROM ai_documents")

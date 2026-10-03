@@ -30,6 +30,7 @@ RERANK_TOP_N = 5
 @dataclass(frozen=True)
 class RankedChunk:
     chunk_id: UUID
+    document_id: UUID
     heading_path: str | None
     content: str
     fused_score: float
@@ -84,6 +85,7 @@ async def retrieve_ranked_chunks(
     return [
         RankedChunk(
             chunk_id=item.chunk_id,
+            document_id=records_by_id[item.chunk_id].document_id,
             heading_path=records_by_id[item.chunk_id].heading_path,
             content=records_by_id[item.chunk_id].content,
             fused_score=fused_score_by_id[item.chunk_id],

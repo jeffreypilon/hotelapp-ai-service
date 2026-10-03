@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import io
+import sys
 
 import uvicorn
 
-from hotelapp_ai.config.settings import get_settings
+from hotelapp_ai.config.settings import Settings, get_settings
+from hotelapp_ai.domain.assistant_events import CitationEvent, DoneEvent, ErrorEvent, TokenEvent
 from hotelapp_ai.repositories.database import assert_ai_schema_ready
+from hotelapp_ai.services.assistant import AssistantDependencies, AssistantService
 from hotelapp_ai.services.ingestion import OpenAIEmbeddingProvider, run_ingestion
+from hotelapp_ai.services.llm_client import LLMClient
 from hotelapp_ai.services.reranking import CrossEncoderReranker
 from hotelapp_ai.services.retrieval import RankedChunk, retrieve_ranked_chunks
 
@@ -73,6 +78,74 @@ def _print_ranked_chunks(ranked: list[RankedChunk]) -> None:
         print(f"   {snippet}")
 
 
+def ask(question: str) -> None:
+    """Streams a cited, corpus-grounded answer to the terminal. There is no frontend yet --
+    item 9 is blocked on both copies of `ui-specifications.md` gaining assistant screens -- so
+    this is AI Step 3's "done means" check, mirroring Step 2's `retrieve` exactly.
+    """
+    settings = get_settings()
+    database_url = settings.require_database_url()
+    if not settings.openai_api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is required for `hotelapp-ai ask`. The assistant needs it for "
+            "embeddings, grading, and generation."
+        )
+    assert_ai_schema_ready(database_url)
+
+    # Found by hand verifying this step on Windows: the streamed answer can legitimately contain
+    # a character outside `cp1252` (a non-breaking hyphen, in one real run), and the default
+    # console encoding there is not UTF-8. A corpus-grounded answer crashing the one CLI this
+    # step's "done means" depends on is worse than a best-effort re-encode.
+    if (
+        isinstance(sys.stdout, io.TextIOWrapper)
+        and sys.stdout.encoding is not None
+        and sys.stdout.encoding.lower() != "utf-8"
+    ):
+        sys.stdout.reconfigure(encoding="utf-8")
+
+    asyncio.run(_ask_and_print(question, settings=settings, database_url=database_url))
+
+
+async def _ask_and_print(question: str, *, settings: Settings, database_url: str) -> None:
+    assert settings.openai_api_key is not None
+
+    with OpenAIEmbeddingProvider(
+        api_key=settings.openai_api_key, model=settings.embedding_model
+    ) as embedding_provider:
+        llm_client = LLMClient(api_key=settings.openai_api_key)
+        try:
+            deps = AssistantDependencies(
+                database_url=database_url,
+                embedding_provider=embedding_provider,
+                reranker=CrossEncoderReranker(),
+                llm_client=llm_client,
+                generation_model=settings.generation_model,
+                grading_model=settings.grading_model,
+            )
+            service = AssistantService(deps, question_max_length=settings.question_max_length)
+
+            citations: list[str] = []
+            async for event in service.ask(question=question):
+                if isinstance(event, TokenEvent):
+                    print(event.text, end="", flush=True)
+                elif isinstance(event, CitationEvent):
+                    section = f" \u2014 {event.section}" if event.section else ""
+                    citations.append(f"[{len(citations) + 1}] {event.document_title}{section}")
+                elif isinstance(event, DoneEvent):
+                    print()
+                    print()
+                    print("\n".join(citations) if citations else "(no citations)")
+                    print(
+                        f"\n(usage: promptTokens={event.prompt_tokens} "
+                        f"completionTokens={event.completion_tokens} costUsd={event.cost_usd})"
+                    )
+                elif isinstance(event, ErrorEvent):
+                    print()
+                    print(f"[error] {event.code}: {event.detail}")
+        finally:
+            await llm_client.aclose()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="hotelapp-ai")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -88,6 +161,12 @@ def main() -> None:
         help="Hybrid retrieval, fusion and reranking for one question. No generation.",
     )
     retrieve_parser.add_argument("question", help="The question to retrieve chunks for.")
+    ask_parser = subparsers.add_parser(
+        "ask",
+        help="Stream a cited, corpus-grounded answer for one question. AI Step 3's manual-"
+        "verification CLI -- no frontend exists yet.",
+    )
+    ask_parser.add_argument("question", help="The question to ask the assistant.")
 
     args = parser.parse_args()
     if args.command == "serve":
@@ -96,6 +175,8 @@ def main() -> None:
         ingest(show_stats=args.stats)
     if args.command == "retrieve":
         retrieve(args.question)
+    if args.command == "ask":
+        ask(args.question)
 
 
 if __name__ == "__main__":

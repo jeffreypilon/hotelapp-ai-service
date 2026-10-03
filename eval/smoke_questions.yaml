@@ -1,0 +1,89 @@
+# AI Step 3 smoke-test question set.
+#
+# NOT scored -- this is not eval/golden_set.yaml, which is item 8's own, larger RAGAS-scored
+# suite (testing-standards.md §5). This set is eyeballed by hand on every change to
+# services/assistant.py, services/retrieval.py, the prompts, or the corpus, via:
+#
+#   uv run hotelapp-ai ask "<question>"
+#
+# One question per major corpus document, plus the two cases the phased-implementation-plan.md
+# AI Step 3 instructions name explicitly: the pet-policy question AI Step 2 found troublesome,
+# and the 48-hour cancellation worked example from the policy-consistency rule.
+#
+# For each: read the streamed answer, confirm the citation names the right document *and*
+# section, and confirm an out-of-corpus question declines rather than inventing an answer.
+
+questions:
+  - id: pet-policy
+    question: "Can I bring my dog?"
+    expects_citation_from: "Harborview Grand — House Rules"
+    note: >
+      The case AI Step 2 found by hand: a plain-English phrasing that a small cross-encoder
+      ranked an unrelated breakfast-hours chunk above the real pet-policy chunk for. Confirms
+      the grading step catches what reranking alone did not.
+
+  - id: cancellation-worked-example
+    question: >
+      If I'm checking in to Harborview Grand on 14 November, what is the exact cancellation
+      deadline, and is it refundable right up to that point?
+    expects_citation_from: "Cancellation and Rate-Type Policy"
+    note: >
+      The 48-hour worked example from the policy-consistency rule
+      (testing-standards.md §4). The answer must match "12 November at 00:00 Eastern" and
+      must not invent a different number.
+
+  - id: booking-terms
+    question: "Do I need to be a certain age to book a reservation?"
+    expects_citation_from: "Booking Terms and Conditions"
+
+  - id: payment-and-billing
+    question: "What forms of payment do you accept, and when is my card actually charged?"
+    expects_citation_from: "Payment and Billing Policy"
+
+  - id: special-rates
+    question: "I'm a AAA member. Does that get me a discount at both properties?"
+    expects_citation_from: "Special Rates and Discounts"
+    note: >
+      Correct answer distinguishes the two properties -- Harborview Grand offers 10% AAA/CAA,
+      Lakeside Inn does not. A model that says "yes" without qualification is wrong.
+
+  - id: accessibility
+    question: "Are service animals allowed, and are they ever charged a pet fee?"
+    expects_citation_from: "Accessibility Commitment"
+
+  - id: meetings-and-events
+    question: "Can I book a small meeting room for an afternoon workshop?"
+    expects_citation_from: "Meetings and Events"
+
+  - id: harborview-room-types
+    question: "What is the difference between Harborview Grand's standard and harbor-view rooms?"
+    expects_citation_from: "Harborview Grand — Room Type Guide"
+
+  - id: harborview-amenities
+    question: "Does Harborview Grand have a fitness centre?"
+    expects_citation_from: "Harborview Grand — Amenities and Guest Services"
+
+  - id: harborview-parking
+    question: "Is parking guaranteed if I drive to Harborview Grand?"
+    expects_citation_from: "Harborview Grand — Directions and Parking"
+
+  - id: portland-area-guide
+    question: "What's within walking distance of Harborview Grand?"
+    expects_citation_from: "Harborview Grand — Portland Area Guide"
+
+  - id: lakeside-room-types
+    question: "Does Lakeside Inn have rooms with a lake view?"
+    expects_citation_from: "Lakeside Inn — Room Type Guide"
+
+  - id: lakeside-directions
+    question: "How do I get to Lakeside Inn from the airport?"
+    expects_citation_from: "Lakeside Inn — Directions and Parking"
+
+  - id: out-of-corpus-decline
+    question: "What's the wifi password at Harborview Grand?"
+    expects_citation_from: null
+    note: >
+      Deliberately out of corpus (no document states a wifi password). The assistant must
+      decline rather than invent one -- the second required manual check per AI Step 3's
+      instructions ("ask one whose answer is not [in the corpus], and confirm it declines
+      rather than inventing").

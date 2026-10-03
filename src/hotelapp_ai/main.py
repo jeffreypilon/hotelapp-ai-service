@@ -14,7 +14,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from hotelapp_ai.config.settings import get_settings
 from hotelapp_ai.gateways.hotelapp import HotelAppGateway
 from hotelapp_ai.repositories.database import assert_ai_schema_ready
-from hotelapp_ai.transport.rest import health
+from hotelapp_ai.services.assistant import AssistantDependencies, AssistantService
+from hotelapp_ai.services.ingestion import OpenAIEmbeddingProvider
+from hotelapp_ai.services.llm_client import LLMClient
+from hotelapp_ai.services.reranking import LazyReranker
+from hotelapp_ai.transport.rest import assistant, health
 from hotelapp_ai.transport.rest.problem import (
     ProblemDetailError,
     problem_detail_exception_handler,
@@ -49,10 +53,39 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.gateway = HotelAppGateway(client, settings.hotelapp_api_base_url)
     app.state.retrieval_status = "UP"
 
+    # `OPENAI_API_KEY` absent is a valid, designed state -- see settings.py and
+    # error-handling.md §4. `embedding_provider`/`llm_client` stay `None` in that case;
+    # `AssistantService.ask` reports `AI_UNAVAILABLE` before touching either, and the reranker
+    # stays unloaded (`LazyReranker`) since retrieval is never reached.
+    embedding_provider: OpenAIEmbeddingProvider | None = None
+    llm_client: LLMClient | None = None
+    if settings.provider_configured:
+        assert settings.openai_api_key is not None
+        embedding_provider = OpenAIEmbeddingProvider(
+            api_key=settings.openai_api_key, model=settings.embedding_model
+        )
+        llm_client = LLMClient(api_key=settings.openai_api_key)
+
+    assistant_deps = AssistantDependencies(
+        database_url=settings.require_database_url(),
+        embedding_provider=embedding_provider,
+        reranker=LazyReranker(),
+        llm_client=llm_client,
+        generation_model=settings.generation_model,
+        grading_model=settings.grading_model,
+    )
+    app.state.assistant_service = AssistantService(
+        assistant_deps, question_max_length=settings.question_max_length
+    )
+
     try:
         yield
     finally:
         await client.aclose()
+        if embedding_provider is not None:
+            embedding_provider.close()
+        if llm_client is not None:
+            await llm_client.aclose()
 
 
 def create_app() -> FastAPI:
@@ -73,6 +106,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(Exception, unhandled_exception_handler)
 
     app.include_router(health.router, prefix="/api/v1")
+    app.include_router(assistant.router, prefix="/api/v1")
 
     return app
 

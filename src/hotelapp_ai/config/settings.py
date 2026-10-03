@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     embedding_model: str = "text-embedding-3-small"
 
+    # Model tiers per ai-enablement-overview.md §11. Generation is the one output a guest reads;
+    # rewrite and grading are classification-shaped and use the cheaper nano tier.
+    generation_model: str = "gpt-5.4-mini"
+    grading_model: str = "gpt-5.4-nano"
+
+    # Assumption: no ceiling is fixed in api-contracts.md beyond "the configured ceiling" for
+    # QUESTION_TOO_LONG. 2000 characters is roughly 400-500 tokens -- generous for a guest
+    # question, cheap to reject before any model call.
+    question_max_length: int = 2000
+
     # ai_* tables only.
     database_url: str | None = None
 

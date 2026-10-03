@@ -5,6 +5,91 @@ natural-language availability search. Reads business data over the REST contract
 
 ## Status
 
+**Step 3 (the guest assistant, F3) is now implemented in code.** The first step with a model call
+that *generates* an answer -- corpus-grounded only, no backend calls, no reservation awareness --
+per `../hotelapp-context/shared/phased-implementation-plan.md`.
+
+Added in this step:
+- `domain/errors.py` and `domain/assistant_events.py`: pure exception types and SSE event shapes,
+  deliberately kept out of `services/assistant.py` so `transport/rest/assistant.py` can import the
+  types it needs for `isinstance` checks without transitively pulling `httpx`/`psycopg` into
+  `transport/`'s import graph -- import-linter's forbidden-module check is transitive, and this
+  split is what keeps all four layering contracts green;
+- `domain/citations.py`: the fixed `[n] Document Title -- Section` footnote format, unit-tested;
+- `services/llm_client.py`: a raw `httpx` client for OpenAI chat completions -- streaming
+  generation and structured-output (`json_schema`) classification for grading and query rewrite --
+  mirroring `services/ingestion.py`'s existing embedding client rather than adding a second way to
+  call the same API;
+- `services/assistant.py`: the LangGraph retrieval graph (`rewrite_query -> retrieve -> grade ->
+  [generate | decompose_and_retry, bounded to one retry] -> generate`), and
+  `AssistantService.ask`, which streams citations then tokens then a `done` event -- or, for a
+  phase-1 failure, raises before the first event so `transport/` can turn it into an ordinary
+  Problem Details response instead of a truncated stream (error-handling.md §3);
+- `transport/rest/assistant.py`: `POST /assistant/ask`, hand-rolled SSE framing (no new
+  dependency), and the pre-stream/mid-stream error split, implemented by peeking the orchestrator's
+  first event before opening the `StreamingResponse`;
+- `prompts/rewrite_query.md`, `prompts/grade_retrieval.md`, `prompts/answer.md`;
+- `hotelapp-ai ask "<question>"`: this step's manual-verification CLI, mirroring Step 2's
+  `retrieve` exactly -- there is no frontend yet (item 9 is blocked on both copies of
+  `ui-specifications.md` gaining assistant screens);
+- `eval/smoke_questions.yaml`: 14 hand-written questions, eyeballed by hand on every change to
+  retrieval, the prompts, or the corpus -- not scored, and not `eval/golden_set.yaml`, which is
+  item 8's own, larger RAGAS-scored suite.
+
+### A judgment call, flagged rather than silently applied
+
+The architecture spec's diagram draws `dense_retrieve` and `sparse_retrieve` as two parallel
+edges. `repositories/chunks.py#hybrid_search` already runs both halves in **one** SQL statement
+(Step 2's explicit optimisation, load-bearing for the `EXPLAIN` test), and `services/
+retrieval.retrieve_ranked_chunks` already composes embed -> hybrid search -> fuse -> rerank into
+one call. The graph therefore has one `retrieve` node documenting what it does, rather than
+re-splitting that into a fan-out that would either issue the query twice or fake a parallel edge
+around a single result. Documented in `services/assistant.py`'s module docstring.
+
+### A real finding from this step
+
+OpenAI's newer chat-completion models (`gpt-5.4-mini`, `gpt-5.4-nano`) reject the `max_tokens`
+parameter outright -- `400 Unsupported parameter: 'max_tokens' is not supported with this model.
+Use 'max_completion_tokens' instead.` Found by hand running `hotelapp-ai ask` against the real
+API while verifying this step. Fixed in `services/llm_client.py`, which sends
+`max_completion_tokens` on the wire while keeping `max_tokens` as this module's own parameter name
+(the project-wide term everywhere else).
+
+**Verified in this environment, end to end, against the real Compose database, a running Spring
+Boot backend, and a real `OPENAI_API_KEY`:**
+- `uv run hotelapp-ai ask "Can I bring my dog?"` -- AI Step 2's troublesome pet-policy question --
+  retrieved the Harborview Grand and Lakeside Inn pet-policy chunks and the Accessibility
+  Commitment's service-animal section, graded the retrieval sufficient on the first pass, and
+  generated a correctly-cited answer that distinguishes pets from service animals -- citing the
+  real pet-policy chunks even though the cross-encoder still ranks an unrelated breakfast-hours
+  chunk first, which is exactly the failure this step's grading step exists to catch.
+- `uv run hotelapp-ai ask "If I'm checking in to Harborview Grand on 14 November, what is the
+  exact cancellation deadline...?"` -- the 48-hour worked example -- returned "12 November at
+  00:00 Eastern," matching `shared/acceptance-criteria.md` exactly.
+- `uv run hotelapp-ai ask "Do you have an indoor swimming pool at Lakeside Inn?"` -- a genuinely
+  out-of-corpus question -- triggered the bounded retry (`retryCount=1` in the log line) and then
+  declined rather than inventing an answer, directing the guest to contact the property.
+- `uv run hotelapp-ai ask "I'm a AAA member. Does that get me a discount at both properties?"`
+  correctly distinguished Harborview Grand's 10% AAA/CAA discount from Lakeside Inn's lack of one.
+- A real `curl -N` against a running `hotelapp-ai serve` streamed `citation` events, then `token`
+  events, then a `done` event with real usage and cost figures, over actual SSE.
+- With `OPENAI_API_KEY` unset: `GET /assistant/health` reports `"provider":"NOT_CONFIGURED"` while
+  `"status":"UP"`, and `POST /assistant/ask` returns an ordinary `503 AI_UNAVAILABLE` Problem
+  Details response -- before any byte of a stream, per error-handling.md §4.
+- `docker build` succeeds with the new `langgraph` dependency; `docker run --network none` against
+  the built image still imports `hotelapp_ai.main` successfully and resolves `prompts/*.md` from
+  inside the image, proving the offline property holds with generation added.
+- All 37 tests (12 new: 3 citation, 5 graph/retry-bound, 4 SSE framing), `ruff check`/`format
+  --check`, `mypy --strict`, and `lint-imports` pass. The REST-only boundary grep over
+  `repositories/` still finds nothing.
+
+### A note on scope
+
+This repository change was scoped to `hotelapp-ai-service` only, as AI Step 3 requires. No MCP, no
+OAuth, no F2 natural-language search, and no changes to `hotelapp-context` were needed or made.
+
+## Step 2 status (hybrid retrieval)
+
 **Step 2 (hybrid retrieval) is now implemented in code.** Still no generation -- this step ends
 with a ranked list of chunks, which is exactly where AI Step 2 stops per
 `../hotelapp-context/shared/phased-implementation-plan.md`.
@@ -106,6 +191,7 @@ uv run hotelapp-ai serve   # FastAPI on :8000
 uv run hotelapp-ai ingest
 uv run hotelapp-ai ingest --stats
 uv run hotelapp-ai retrieve "What is the cancellation policy?"   # Step 2: ranked chunks, no generation
+uv run hotelapp-ai ask "Can I bring my dog?"                     # Step 3: a cited, streamed answer
 ```
 
 ```powershell

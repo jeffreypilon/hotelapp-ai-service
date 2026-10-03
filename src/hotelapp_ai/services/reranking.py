@@ -71,3 +71,27 @@ class CrossEncoderReranker:
         ]
         scored.sort(key=lambda item: item.score, reverse=True)
         return scored[:top_n]
+
+
+class LazyReranker:
+    """Defers `CrossEncoderReranker`'s model load until the first real `rerank` call.
+
+    `main.py` wires one `LazyReranker` per app at startup, cheaply, so constructing the app --
+    including in every unit test that calls `create_app()` for an unrelated route -- never pulls
+    in `sentence_transformers`/`torch` unless an assistant request actually reaches retrieval.
+    """
+
+    def __init__(self, *, model_name: str = RERANKER_MODEL_NAME) -> None:
+        self._model_name = model_name
+        self._reranker: CrossEncoderReranker | None = None
+
+    def rerank(
+        self,
+        *,
+        query: str,
+        candidates: Sequence[RerankCandidate],
+        top_n: int,
+    ) -> list[RerankedChunk]:
+        if self._reranker is None:
+            self._reranker = CrossEncoderReranker(model_name=self._model_name)
+        return self._reranker.rerank(query=query, candidates=candidates, top_n=top_n)
