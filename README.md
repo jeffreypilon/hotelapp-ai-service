@@ -5,7 +5,95 @@ natural-language availability search. Reads business data over the REST contract
 
 ## Status
 
-**Step 3 (the guest assistant, F3) is now implemented in code.** The first step with a model call
+**Step 4 (natural-language availability search, F2) is now implemented in code.**
+`POST /assistant/search` resolves a free-text request into `GET /availability`'s own parameter
+set via one structured-output call, then runs that search -- named/city-implied property, one
+call; no property resolvable, one call per property with the results merged, re-sorted, and
+re-paginated. No LangGraph here: a single structured-output call does not need a graph, per
+`../hotelapp-context/shared/phased-implementation-plan.md`'s AI Step 4.
+
+Added in this step:
+- `domain/errors.py` gains `SearchParamsIncompleteError` (extraction itself noticed a missing
+  check-in/check-out date -- `400 VALIDATION_FAILED` with a plain-language `detail`, never a
+  guessed date) and `BackendProblemError` (a `GET /availability` Problem Details response,
+  carried through unmodified -- error-handling.md §2's "translated, never re-interpreted" rule);
+- `gateways/hotelapp.py` gains `get_availability()` -- the raw response, same style as
+  `get_properties()`; interpreting the body, including Problem Details passthrough, stays the
+  caller's job;
+- `services/search.py`: the one structured-output call (schema-constrained `roomTypeCode`,
+  `rateCategory`, `amenityCode` enums sourced from `data-model.md`/`V001__initial_schema.sql`;
+  `propertyId` constrained to the **live** `get_properties()` list every call, never a name baked
+  into the prompt), the named/unnamed-property branch, and `_merge_availability`'s re-sort/
+  re-paginate over the combined set;
+- `transport/rest/search.py`: `POST /assistant/search`'s request/response shapes and the Problem
+  Details mapping for every exception `services/search.py` can raise -- untyped
+  `request.app.state.search_service`, same pattern `rest/assistant.py` uses, so this module never
+  transitively imports `httpx`/`psycopg` via `services/`;
+- `prompts/extract_search_params.md`;
+- `hotelapp-ai search "<query>"`: this step's manual-verification CLI, mirroring `ask`/`retrieve`
+  exactly -- no frontend exists yet;
+- `eval/search_smoke_questions.yaml`: the six cases phased-implementation-plan.md's AI Step 4
+  instructions name explicitly -- a named property, an unnamed property (fan-out), a relative
+  date, an amenity request, a rate-category phrase, and the missing-dates case.
+
+### Two real findings from this step, found by hand with the CLI
+
+Both are prompt gaps, not code bugs -- the structured-output schema made every value
+*structurally* valid, but the **nano** tier still needed more explicit instruction to derive two
+kinds of date arithmetic reliably:
+
+1. **"Next weekend" resolved to `null` dates on the first run.** The model was given today's date
+   as a bare ISO string and did not reliably derive its own day of the week from it. Fixed by
+   rendering `<<<TODAY>>>` as `"2026-10-03 (Saturday)"` -- spelling out the weekday removes that
+   arithmetic from the model entirely -- and adding an explicit "Friday through Sunday following
+   today" rule to the prompt.
+2. **A stated check-in date plus "for one night" also resolved to `null` `checkOutDate`.** The
+   model did not treat a stay length as a second date, even with an explicit check-in date given.
+   Fixed by adding an explicit rule: a stated check-in plus a stated stay length is a *found* date
+   (check-in plus that many days), not a guessed one -- only the complete absence of a second date
+   or a stay length should produce `null`.
+
+Neither finding would have been visible without actually reading the interpretation and
+parameters by hand, which is exactly what this step's "done means" asks for rather than scoring.
+
+**Verified in this environment, end to end, against the real Compose database, a running Spring
+Boot backend, and a real `OPENAI_API_KEY`:**
+- All six `eval/search_smoke_questions.yaml` cases, run with `uv run hotelapp-ai search "<query>"`:
+  - A named property ("...at Harborview Grand...") resolved to Harborview Grand's real id and
+    made exactly one `GET /availability` call, returning its four Harbor View room types.
+  - An unnamed property ("A room for two guests...") resolved `propertyId: null`, made one call
+    per property, and the merged result genuinely contained both Lakeside Inn and Harbor View
+    room types, re-sorted by nightly rate ascending across the combined set.
+  - "A room for two, next weekend" (today was Saturday 2026-10-03) resolved to
+    `checkInDate: "2026-10-09"` / `checkOutDate: "2026-10-11"` -- the following Friday through
+    Sunday, after the weekday fix above.
+  - "...checking in 2026-11-14 for one night" with a refrigerator and a microwave correctly
+    extracted `amenityCode: ["REFRIGERATOR", "MICROWAVE"]` and `checkOutDate: "2026-11-15"`, and
+    returned zero results -- confirmed against a direct `GET /availability` call that no seeded
+    room type actually has both amenities together, so the empty result is correct, not a bug.
+  - "I'm a AAA member..." extracted `rateCategory: "AAA_CAA"` and returned Harborview Grand's
+    room types with the real 10%-off nightly rates (e.g. `$249.00` -> `$224.10`).
+  - "A quiet room for two at Harborview Grand" (no dates at all) returned
+    `400 VALIDATION_FAILED` with "I didn't catch your dates -- what check-in and check-out are
+    you thinking?" and made **no** `GET /availability` call -- confirmed via the fake gateway's
+    call log in the unit test and by inspection of this run.
+- With `OPENAI_API_KEY` unset: a locally-run `hotelapp-ai serve` still started, `GET
+  /assistant/health` reported `"status":"UP"` / `"provider":"NOT_CONFIGURED"`, and `POST
+  /assistant/search` returned an ordinary `503 AI_UNAVAILABLE` Problem Details response.
+- All 45 tests (11 new: 7 `services/search.py`, 4 `transport/rest/search.py`), `ruff check`, `mypy
+  --strict`, and `lint-imports` pass (all four layering contracts still kept).
+
+### A note on scope
+
+This repository change was scoped to `hotelapp-ai-service` only, as AI Step 4 requires, plus one
+one-line correction to `hotelapp-context/shared/api-contracts.md`'s `POST /assistant/search`
+example (`"guests"` -> `"numGuests"`, matching `GET /availability`'s own parameter name used
+everywhere else in that contract). No MCP, no OAuth, and no retrieval-graph changes were needed or
+made.
+
+## Step 3 status (the guest assistant, F3)
+
+**Step 3 (the guest assistant, F3) is implemented in code.** The first step with a model call
 that *generates* an answer -- corpus-grounded only, no backend calls, no reservation awareness --
 per `../hotelapp-context/shared/phased-implementation-plan.md`.
 
@@ -192,6 +280,7 @@ uv run hotelapp-ai ingest
 uv run hotelapp-ai ingest --stats
 uv run hotelapp-ai retrieve "What is the cancellation policy?"   # Step 2: ranked chunks, no generation
 uv run hotelapp-ai ask "Can I bring my dog?"                     # Step 3: a cited, streamed answer
+uv run hotelapp-ai search "A room for two, next weekend"         # Step 4: availability parameters
 ```
 
 ```powershell

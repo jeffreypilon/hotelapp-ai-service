@@ -1,0 +1,52 @@
+# AI Step 4 smoke-test question set.
+#
+# NOT scored -- same spirit as eval/smoke_questions.yaml (AI Step 3): eyeballed by hand on every
+# change to services/search.py, extract_search_params.md, or the amenity/rate-category/room-type
+# constants, via:
+#
+#   uv run hotelapp-ai search "<query>"
+#
+# Read every interpretation, not just the results -- an interpretation that silently misreads
+# "two guests" as `numGuests: 12` is a bug `GET /availability` will never catch, because 12 is a
+# perfectly valid number. The six cases below are the ones phased-implementation-plan.md's AI
+# Step 4 instructions name explicitly.
+
+queries:
+  - id: named-property
+    query: "Two guests at Harborview Grand, checking in 2026-11-14 and checking out 2026-11-16."
+    expects: >
+      propertyId resolves to Harborview Grand's id; one GET /availability call; numGuests: 2.
+
+  - id: unnamed-property-fan-out
+    query: "A room for two guests, checking in 2026-11-14 and checking out 2026-11-16."
+    expects: >
+      propertyId is null; one GET /availability call per property; the merged `data` genuinely
+      contains rows from both Harborview Grand and Lakeside Inn, not just that the request does
+      not crash. Check both property names appear among the returned room types.
+
+  - id: relative-date
+    query: "A room for two, next weekend."
+    expects: >
+      checkInDate/checkOutDate resolve to the Friday/Sunday following the service's own current
+      UTC date (supplied to the prompt explicitly) -- never a date computed from the reader's own
+      timezone or copied from a prior run.
+
+  - id: amenity-request
+    query: "A room with a refrigerator and a microwave, checking in 2026-11-14 for one night."
+    expects: >
+      amenityCode includes REFRIGERATOR and MICROWAVE, and only those two -- a feature not in the
+      fixed amenity list must not be mapped to the closest value.
+
+  - id: rate-category-phrase
+    query: >
+      I'm a AAA member looking for a room at Harborview Grand, checking in 2026-11-14 for one
+      night.
+    expects: >
+      rateCategory: AAA_CAA, not the default NONE.
+
+  - id: missing-dates
+    query: "A quiet room for two at Harborview Grand."
+    expects: >
+      400 VALIDATION_FAILED with a detail naming the missing dates in plain language -- not a
+      bare passthrough of GET /availability's own generic message, and no invented date. No
+      GET /availability call is made at all.

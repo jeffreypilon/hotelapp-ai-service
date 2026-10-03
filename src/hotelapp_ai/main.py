@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -18,7 +19,9 @@ from hotelapp_ai.services.assistant import AssistantDependencies, AssistantServi
 from hotelapp_ai.services.ingestion import OpenAIEmbeddingProvider
 from hotelapp_ai.services.llm_client import LLMClient
 from hotelapp_ai.services.reranking import LazyReranker
-from hotelapp_ai.transport.rest import assistant, health
+from hotelapp_ai.services.search import SearchDependencies
+from hotelapp_ai.services.search import search as run_search
+from hotelapp_ai.transport.rest import assistant, health, search
 from hotelapp_ai.transport.rest.problem import (
     ProblemDetailError,
     problem_detail_exception_handler,
@@ -78,6 +81,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         assistant_deps, question_max_length=settings.question_max_length
     )
 
+    search_deps = SearchDependencies(
+        gateway=app.state.gateway,
+        llm_client=llm_client,
+        # F2 parameter extraction shares the nano tier with rewrite/grading --
+        # ai-enablement-overview.md §11 groups all three under one row, not three settings.
+        extraction_model=settings.grading_model,
+    )
+    app.state.search_service = functools.partial(run_search, search_deps)
+
     try:
         yield
     finally:
@@ -107,6 +119,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(assistant.router, prefix="/api/v1")
+    app.include_router(search.router, prefix="/api/v1")
 
     return app
 

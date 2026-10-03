@@ -38,3 +38,29 @@ class ProviderRateLimitedError(Exception):
 
 class ProviderContentFilteredError(Exception):
     """The provider refused to answer on policy grounds -- `AI_CONTENT_FILTERED`, 422."""
+
+
+class SearchParamsIncompleteError(Exception):
+    """`services/search.py`'s extraction call could not find a check-in and/or check-out date
+    anywhere in the free text -- `VALIDATION_FAILED`, 400, with a `detail` naming what is
+    missing in plain language. Distinct from `BackendProblemError`: this gap was noticed by
+    extraction itself, before `GET /availability` was ever called, per
+    api-contracts.md's `POST /assistant/search`.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
+class BackendProblemError(Exception):
+    """A Problem Details response from `GET /availability`, carried through unmodified --
+    error-handling.md §2's "translated, never re-interpreted" rule. `status`/`code`/`detail`
+    round-trip into `transport/rest/search.py`'s own Problem Details body verbatim.
+    """
+
+    def __init__(self, *, status: int, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.status = status
+        self.code = code
+        self.detail = detail

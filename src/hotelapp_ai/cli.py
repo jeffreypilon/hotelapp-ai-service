@@ -5,18 +5,31 @@ from __future__ import annotations
 import argparse
 import asyncio
 import io
+import json
 import sys
 
+import httpx
 import uvicorn
 
 from hotelapp_ai.config.settings import Settings, get_settings
 from hotelapp_ai.domain.assistant_events import CitationEvent, DoneEvent, ErrorEvent, TokenEvent
+from hotelapp_ai.domain.errors import (
+    BackendProblemError,
+    ProviderContentFilteredError,
+    ProviderRateLimitedError,
+    ProviderTimeoutError,
+    ProviderUnavailableError,
+    SearchParamsIncompleteError,
+)
+from hotelapp_ai.gateways.hotelapp import HotelAppGateway
 from hotelapp_ai.repositories.database import assert_ai_schema_ready
 from hotelapp_ai.services.assistant import AssistantDependencies, AssistantService
 from hotelapp_ai.services.ingestion import OpenAIEmbeddingProvider, run_ingestion
 from hotelapp_ai.services.llm_client import LLMClient
 from hotelapp_ai.services.reranking import CrossEncoderReranker
 from hotelapp_ai.services.retrieval import RankedChunk, retrieve_ranked_chunks
+from hotelapp_ai.services.search import SearchDependencies
+from hotelapp_ai.services.search import search as run_search
 
 
 def serve() -> None:
@@ -78,6 +91,21 @@ def _print_ranked_chunks(ranked: list[RankedChunk]) -> None:
         print(f"   {snippet}")
 
 
+def _ensure_utf8_stdout() -> None:
+    """Found by hand verifying AI Step 3 on Windows: a model's output can legitimately contain a
+    character outside `cp1252` (a non-breaking hyphen, in one real run; an interpunct and an
+    en dash, in AI Step 4's), and the default console encoding there is not UTF-8. A correct
+    answer crashing the one CLI a step's "done means" depends on is worse than a best-effort
+    re-encode.
+    """
+    if (
+        isinstance(sys.stdout, io.TextIOWrapper)
+        and sys.stdout.encoding is not None
+        and sys.stdout.encoding.lower() != "utf-8"
+    ):
+        sys.stdout.reconfigure(encoding="utf-8")
+
+
 def ask(question: str) -> None:
     """Streams a cited, corpus-grounded answer to the terminal. There is no frontend yet --
     item 9 is blocked on both copies of `ui-specifications.md` gaining assistant screens -- so
@@ -91,17 +119,7 @@ def ask(question: str) -> None:
             "embeddings, grading, and generation."
         )
     assert_ai_schema_ready(database_url)
-
-    # Found by hand verifying this step on Windows: the streamed answer can legitimately contain
-    # a character outside `cp1252` (a non-breaking hyphen, in one real run), and the default
-    # console encoding there is not UTF-8. A corpus-grounded answer crashing the one CLI this
-    # step's "done means" depends on is worse than a best-effort re-encode.
-    if (
-        isinstance(sys.stdout, io.TextIOWrapper)
-        and sys.stdout.encoding is not None
-        and sys.stdout.encoding.lower() != "utf-8"
-    ):
-        sys.stdout.reconfigure(encoding="utf-8")
+    _ensure_utf8_stdout()
 
     asyncio.run(_ask_and_print(question, settings=settings, database_url=database_url))
 
@@ -146,6 +164,67 @@ async def _ask_and_print(question: str, *, settings: Settings, database_url: str
             await llm_client.aclose()
 
 
+def search(query: str) -> None:
+    """Resolves a free-text request into `GET /availability` parameters and runs that search,
+    printing the interpretation, the resolved parameters, and the room types found. AI Step 4's
+    manual-verification CLI, mirroring `retrieve` and `ask` exactly -- no frontend exists yet.
+    """
+    settings = get_settings()
+    if not settings.openai_api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is required for `hotelapp-ai search`. Extraction needs it for the "
+            "structured-output call."
+        )
+    _ensure_utf8_stdout()
+    asyncio.run(_search_and_print(query, settings=settings))
+
+
+async def _search_and_print(query: str, *, settings: Settings) -> None:
+    assert settings.openai_api_key is not None
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+        gateway = HotelAppGateway(client, settings.hotelapp_api_base_url)
+        llm_client = LLMClient(api_key=settings.openai_api_key)
+        try:
+            deps = SearchDependencies(
+                gateway=gateway,
+                llm_client=llm_client,
+                extraction_model=settings.grading_model,
+            )
+            try:
+                result = await run_search(deps, query=query)
+            except SearchParamsIncompleteError as exc:
+                print(f"[error] VALIDATION_FAILED: {exc.detail}")
+                return
+            except BackendProblemError as exc:
+                print(f"[error] {exc.code}: {exc.detail}")
+                return
+            except (
+                ProviderTimeoutError,
+                ProviderRateLimitedError,
+                ProviderContentFilteredError,
+                ProviderUnavailableError,
+            ) as exc:
+                print(f"[error] {type(exc).__name__}: {exc}")
+                return
+        finally:
+            await llm_client.aclose()
+
+    print(f"Interpretation: {result.interpretation}")
+    print(f"Parameters: {json.dumps(result.parameters, indent=2)}")
+
+    data = result.results.get("data", [])
+    pagination = result.results.get("pagination", {})
+    print(f"\n{len(data)} room type(s) found (totalItems={pagination.get('totalItems')}):")
+    for row in data:
+        room_type = row["roomType"]
+        pricing = row["pricing"]
+        print(
+            f"  - {room_type['name']} ({room_type['code']}): "
+            f"${pricing['nightlyRate']}/night, {row['availableRoomCount']} available"
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="hotelapp-ai")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -167,6 +246,12 @@ def main() -> None:
         "verification CLI -- no frontend exists yet.",
     )
     ask_parser.add_argument("question", help="The question to ask the assistant.")
+    search_parser = subparsers.add_parser(
+        "search",
+        help="Resolve a free-text request into GET /availability parameters and run that "
+        "search. AI Step 4's manual-verification CLI -- no frontend exists yet.",
+    )
+    search_parser.add_argument("query", help="The free-text search request.")
 
     args = parser.parse_args()
     if args.command == "serve":
@@ -177,6 +262,8 @@ def main() -> None:
         retrieve(args.question)
     if args.command == "ask":
         ask(args.question)
+    if args.command == "search":
+        search(args.query)
 
 
 if __name__ == "__main__":

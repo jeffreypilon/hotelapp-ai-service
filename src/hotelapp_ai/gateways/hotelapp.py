@@ -9,6 +9,11 @@ from __future__ import annotations
 
 import httpx
 
+# The subset of httpx's own `QueryParamTypes` this gateway actually needs -- a scalar per
+# parameter, or a list for a repeatable one (`roomTypeCode`, `amenityCode`), matching
+# `GET /availability`'s own query string shape.
+AvailabilityParams = dict[str, "str | int | float | bool | list[str] | None"]
+
 
 class HotelAppGateway:
     """Thin async wrapper around one shared `httpx.AsyncClient`."""
@@ -23,6 +28,20 @@ class HotelAppGateway:
         """
         headers = {"Cookie": cookie_header} if cookie_header else None
         return await self._client.get(f"{self._base_url}/properties", headers=headers)
+
+    async def get_availability(
+        self, params: AvailabilityParams, *, cookie_header: str | None = None
+    ) -> httpx.Response:
+        """`GET /availability` -- the public availability search. Used by `services/search.py`,
+        once per resolved property or once per property in the catalogue when none is named.
+        Returns the raw response; interpreting the body -- including Problem Details passthrough
+        -- is the caller's job, exactly as `get_properties` leaves it to `check_backend_reachable`
+        and `list_properties`.
+        """
+        headers = {"Cookie": cookie_header} if cookie_header else None
+        return await self._client.get(
+            f"{self._base_url}/availability", params=params, headers=headers
+        )
 
     async def list_properties(self) -> list[dict[str, object]]:
         response = await self.get_properties()
