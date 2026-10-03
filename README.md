@@ -54,6 +54,15 @@ AI Step 3's evaluation-suite territory
 (`../hotelapp-context/stacks/ai-service/testing-standards.md#5-the-evaluation-suite`), not this
 step's. Recorded here rather than quietly worked around, per the project's standing rule.
 
+**A second finding, caught by CI rather than locally:** `sentence-transformers` pulls in `torch`
+as a transitive dependency, and PyPI's default `torch` wheel on Linux bundles a full CUDA stack --
+several GB of `nvidia-*` packages this CPU-only reranker never touches. That was enough to exhaust
+a GitHub Actions runner's disk building the Docker image (`No space left on device`), despite
+building and running correctly on this development machine. Fixed by declaring `torch` as a direct
+dependency pinned to PyTorch's official CPU-only index (`tool.uv.sources` /
+`tool.uv.index` in `pyproject.toml`) -- the built image dropped from several GB to 2.21 GB, and
+`docker run --network none` against it still loads the model and scores a passage offline.
+
 ### A note on scope
 
 This repository change was scoped to `hotelapp-ai-service` only, as AI Step 2 requires. No
