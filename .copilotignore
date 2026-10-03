@@ -1,0 +1,46 @@
+# Pure generated/derived output only -- never useful for diagnosing a bug, and often large.
+# gitignore syntax; no negation support; VS Code Copilot reads this at extension startup only
+# (restart the window after editing).
+#
+# Same philosophy as the five sibling repos' .copilotignore files: exclude Category 1 (build
+# output nobody debugs from) and keep Category 2 (config, lockfiles, properties) visible, since
+# config is where this project's real bugs have actually lived -- the pydantic-settings
+# CORS-parsing crash found in Step 0 is this repo's own example already.
+#
+# ONE DELIBERATE DEVIATION FROM THAT PRECEDENT: .env is excluded here, unlike every sibling repo.
+# Those repos' .env files hold only local, non-sensitive demo credentials (a throwaway Postgres
+# password). This repo's .env holds a REAL OpenAI API key once configured -- an actual secret, not
+# a hypothetical one -- so it is excluded on that basis alone. .env.example (no real values) stays
+# visible, same as everywhere else.
+
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.import_linter_cache/
+.coverage
+coverage/
+htmlcov/
+
+# Corpus build artifacts -- Markdown is the source (stays visible); these are generated from it.
+# See corpus/README.md.
+corpus/pdf/
+corpus/figures/
+
+# The one real secret in this repo -- see the note above.
+.env
+
+# Real secret material, if any is ever added -- none exists in this repo today.
+*.pem
+*.key
+*.p12
+*.jks
+
+.idea/
+.vscode/
