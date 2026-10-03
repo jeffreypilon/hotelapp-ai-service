@@ -36,25 +36,38 @@ Added in this step:
   instructions name explicitly -- a named property, an unnamed property (fan-out), a relative
   date, an amenity request, a rate-category phrase, and the missing-dates case.
 
-### Two real findings from this step, found by hand with the CLI
+### Three real findings from this step, found by hand with the CLI
 
-Both are prompt gaps, not code bugs -- the structured-output schema made every value
-*structurally* valid, but the **nano** tier still needed more explicit instruction to derive two
-kinds of date arithmetic reliably:
+All three are prompt gaps, not code bugs -- the structured-output schema made every value
+*structurally* valid, but the **nano** tier still needed more explicit instruction to derive date
+arithmetic reliably, and once, consistently, run to run:
 
 1. **"Next weekend" resolved to `null` dates on the first run.** The model was given today's date
    as a bare ISO string and did not reliably derive its own day of the week from it. Fixed by
    rendering `<<<TODAY>>>` as `"2026-10-03 (Saturday)"` -- spelling out the weekday removes that
-   arithmetic from the model entirely -- and adding an explicit "Friday through Sunday following
-   today" rule to the prompt.
+   arithmetic from the model entirely.
 2. **A stated check-in date plus "for one night" also resolved to `null` `checkOutDate`.** The
    model did not treat a stay length as a second date, even with an explicit check-in date given.
    Fixed by adding an explicit rule: a stated check-in plus a stated stay length is a *found* date
    (check-in plus that many days), not a guessed one -- only the complete absence of a second date
    or a stay length should produce `null`.
+3. **"Next weekend" resolved to a Sunday checkout in some runs and a Monday checkout in
+   others, on the identical query** -- a second finding that survived the first fix, because a
+   single verification run cannot see a probabilistic failure. "The Friday through Sunday
+   following today" is genuinely ambiguous in English (does the stay include Sunday night or
+   not?), and the model picked a different reading on different calls to the same input. Fixed by
+   replacing the day-range phrase with an explicit table stating the night count and the exact
+   checkout day ("a two-night stay that does not include Sunday night") instead of restating the
+   same ambiguous phrase more firmly. **Verified by sampling the identical query 8 times for the
+   raw extraction and 5 more times through the full CLI** -- all 13 runs produced the identical
+   `checkInDate`/`checkOutDate` pair. While fixing this, the same table also pins down "this
+   weekend" the same way; "a long weekend" is explicitly left as an unresolvable phrase (`null`
+   dates) rather than guessing which extra night it means, since no two readers agree on that
+   either and it is not required by the current smoke set.
 
-Neither finding would have been visible without actually reading the interpretation and
-parameters by hand, which is exactly what this step's "done means" asks for rather than scoring.
+None of these would have been visible without actually reading the interpretation and parameters
+by hand -- and the third was only visible by reading *several* runs, not one -- which is exactly
+what this step's "done means" asks for rather than scoring.
 
 **Verified in this environment, end to end, against the real Compose database, a running Spring
 Boot backend, and a real `OPENAI_API_KEY`:**
@@ -65,8 +78,8 @@ Boot backend, and a real `OPENAI_API_KEY`:**
     per property, and the merged result genuinely contained both Lakeside Inn and Harbor View
     room types, re-sorted by nightly rate ascending across the combined set.
   - "A room for two, next weekend" (today was Saturday 2026-10-03) resolved to
-    `checkInDate: "2026-10-09"` / `checkOutDate: "2026-10-11"` -- the following Friday through
-    Sunday, after the weekday fix above.
+    `checkInDate: "2026-10-09"` / `checkOutDate: "2026-10-11"` -- the following Friday to Sunday,
+    a two-night stay -- identically across 13 sampled runs after the ambiguity fix above.
   - "...checking in 2026-11-14 for one night" with a refrigerator and a microwave correctly
     extracted `amenityCode: ["REFRIGERATOR", "MICROWAVE"]` and `checkOutDate: "2026-11-15"`, and
     returned zero results -- confirmed against a direct `GET /availability` call that no seeded

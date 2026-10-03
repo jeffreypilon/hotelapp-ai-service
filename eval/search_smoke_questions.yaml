@@ -29,7 +29,11 @@ queries:
     expects: >
       checkInDate/checkOutDate resolve to the Friday/Sunday following the service's own current
       UTC date (supplied to the prompt explicitly) -- never a date computed from the reader's own
-      timezone or copied from a prior run.
+      timezone or copied from a prior run. checkOutDate is Sunday, a two-night stay -- not Monday.
+      This is probabilistic, not deterministic: sample this query at least 5 times and confirm
+      checkOutDate is identically Sunday across every run, not just the first one. A single run
+      previously looked correct while the model was silently inconsistent across repeated calls
+      on this exact query.
 
   - id: amenity-request
     query: "A room with a refrigerator and a microwave, checking in 2026-11-14 for one night."

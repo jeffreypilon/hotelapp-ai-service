@@ -23,13 +23,27 @@ and a check-out date anywhere in the text, return both as `null` rather than gue
 a wrong invented date is worse than admitting the gap, which the calling service will report back
 to the guest in plain language. Today's date is supplied below **with its day of the week spelled
 out** -- use that to resolve a relative phrase ("next weekend", "this Friday", "tomorrow") without
-having to work out the weekday yourself. "Next weekend" means the **Friday through Sunday**
-following today, even when today is itself a weekend day.
+having to work out the weekday yourself.
+
+**Relative-phrase dates, stated exactly so there is no room for a second reading:**
+
+| Phrase | `checkInDate` | `checkOutDate` | Nights |
+|--------|---------------|----------------|--------|
+| "next weekend" | the **first Friday strictly after today** | the **Sunday immediately following that Friday** | 2 |
+| "this weekend" | the **soonest Friday on or after today** (today itself, if today is a Friday) | the **Sunday immediately following that Friday** | 2 |
+
+Both rows are a **two-night stay that does not include Sunday night** -- check-out is Sunday
+morning, not Monday. Do not round up to a Monday check-out, and do not extend the stay for any
+reason not stated in the guest's own words. If the guest's phrase is some other variation this
+table does not cover exactly (for example "a long weekend", where the extra night's exact
+placement is a guess no two readers would agree on) and no explicit date or night count is also
+given, treat both `checkInDate` and `checkOutDate` as **not found** -- this is the same "do not
+guess" rule as any other missing date, not a special case.
 
 **A stated check-in date plus a stated stay length is a found date, not a guessed one.** "Checking
 in 2026-11-14 for one night" gives `checkOutDate: "2026-11-15"` -- one calendar day after
 check-in. "For three nights" is check-in plus three days. Only return `null` when the text gives
-you neither a second date nor a stay length to add to the first.
+you neither a second date, a night count, nor one of the exact phrases in the table above.
 
 `numGuests` is the party size as a count of people, or `null` if the guest did not state one --
 "two guests", "a couple", "my partner and I" are `2`; a single traveler with no number stated is
